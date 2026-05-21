@@ -1,0 +1,26 @@
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession 
+import app.pipelines.utils as utils
+import app.services.core as core
+from app.db.postgres import db
+from typing import Optional
+router = APIRouter()
+
+@router.post("/upload", tags=["upload"])
+async def upload(
+    validated_bytes: bytes = Depends(utils.validateFile),
+    db: AsyncSession = Depends(db)
+):
+    return await core.processUpload(validated_bytes, db)
+
+
+@router.get("/search", tags=["search"])
+async def search(
+    db: AsyncSession = Depends(db),
+    q: str = Query(min_length=2),
+    case_id: str | None = Query(None),
+    stream: bool = False,
+):
+    return await core.search(db, q, stream, case_id)
+
+
