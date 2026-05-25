@@ -1,6 +1,7 @@
 import httpx
 import json
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from app.constants import LLM_SYSTEM_PROMPT, NO_EXCERPTS_INSTRUCTION, ANSWER_INSTRUCTIONS
 
 class Settings(BaseSettings):
     LLM_URL: str
@@ -12,11 +13,24 @@ class Settings(BaseSettings):
 
 settings = Settings() # type: ignore
 
-def buildPrompt(records: list[str], query: str) -> str:
-    prompt = "You are a legal research assistant. Based on the following case chunks, answer the question:\n\n"
-    for record in records:
-        prompt += f"Case Text: {record}\n\n"
-    prompt += f"Question: {query}\nAnswer:"
+def buildPrompt(records: list[str], query: str, chat_history: list[dict] | None = None) -> str:
+    prompt = LLM_SYSTEM_PROMPT + "\n\n"
+
+    if records:
+        prompt += "RELEVANT CASE EXCERPTS:\n"
+        for i, record in enumerate(records, 1):
+            prompt += f"[Excerpt {i}]\n{record}\n\n"
+    else:
+        prompt += f"NOTE: {NO_EXCERPTS_INSTRUCTION}\n\n"
+
+    if chat_history:
+        prompt += "CONVERSATION HISTORY:\n"
+        for msg in chat_history:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            prompt += f"{role}: {msg['content']}\n"
+        prompt += "\n"
+
+    prompt += f"CURRENT QUESTION: {query}\n\nINSTRUCTIONS:\n{ANSWER_INSTRUCTIONS}\n\nANSWER:"
     return prompt
 
 async def safe_stream(generator):

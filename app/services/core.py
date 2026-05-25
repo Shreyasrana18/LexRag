@@ -3,8 +3,10 @@ import app.pipelines.parser as parser
 import app.db.qdrant as qdrant
 import app.services.embedding as embedder
 import app.services.llm as llm
+import app.pipelines.utils as utils
+from app.constants import WEAK_RESPONSE_PHRASES
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.db.models import Case, CaseChunk
+from app.db.models import Case, CaseChunk, ChatSession, ChatMessage
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 
@@ -61,21 +63,67 @@ async def processUpload(validated_bytes: bytes, db: AsyncSession):
         raise RuntimeError(f"Upload failed, transaction rolled back: {e}") from e
     
 
-async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | None = None):
+async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | None = None, session_id: str | None = None):
     queryEmbeddings = await embedder.generateEmbeddingsAsync(q)
+
+    if not session_id:
+        new_session = ChatSession(
+            case_id=case_id if case_id else None,
+            created_at=datetime.utcnow()
+        )
+        db.add(new_session)
+        await db.commit()
+        await db.refresh(new_session)
+        session_id = str(new_session.id)
+
+    chat_messages = await db.execute(
+        select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc())
+    )
+    chat_history = utils.formatChatHistory(chat_messages.scalars().all())
+
     results = await qdrant.search(query_vector=queryEmbeddings, case_id=case_id)
     case_ids = [
         result.payload['case_id']
         for result in results
-        if result.payload is not None             
+        if result.payload is not None
     ]
     case_chunks = await db.execute(
         select(CaseChunk.text).where(CaseChunk.case_id.in_(case_ids))
     )
     texts: list[str] = list(case_chunks.scalars().all())
-    prompt = llm.buildPrompt(texts, q)
+    prompt = llm.buildPrompt(texts, q, chat_history)
+
+    db.add(ChatMessage(
+        session_id=session_id,
+        role="user",
+        content=q,
+        created_at=datetime.utcnow()
+    ))
+    await db.commit()
+
+    async def stream_and_save():
+        full_response = []
+        async for chunk in llm.safe_stream(llm.llmsearch(prompt, stream)):
+            full_response.append(chunk)
+            yield chunk
+
+        full_text = "".join(full_response)
+        if not WEAK_RESPONSE_PHRASES:
+            db.add(ChatMessage(
+                session_id=session_id,
+                role="assistant",
+                content=full_text,
+                created_at=datetime.utcnow()
+            ))
+            await db.commit()
+
     return StreamingResponse(
-            llm.safe_stream(llm.llmsearch(prompt, stream)),
-            media_type="text/plain",
-            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache", "Transfer-Encoding": "chunked"}
-        )
+        stream_and_save(),
+        media_type="text/plain",
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-cache",
+            "Transfer-Encoding": "chunked",
+            "X-Session-Id": session_id
+        }
+    )
