@@ -33,6 +33,7 @@ class Case(Base):
         default=datetime.utcnow,
         nullable=False,
     )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
     chunks: Mapped[list["CaseChunk"]] = relationship(
         back_populates="case",
         cascade="all, delete-orphan",

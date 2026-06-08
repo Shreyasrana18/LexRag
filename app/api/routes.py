@@ -1,9 +1,12 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession 
+from fastapi import APIRouter, Depends, Query, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 import app.pipelines.utils as utils
 import app.services.core as core
 from app.db.postgres import db
-from typing import Optional
+from app.db.models import Case
+import uuid
+from uuid import UUID
+
 router = APIRouter()
 
 @router.post("/upload", tags=["upload"])
@@ -29,3 +32,20 @@ async def search(
     return await core.search(db, q, stream, case_id, session_id)
 
 
+
+@router.get("/cases/{case_id}/status", tags=["cases"])
+async def get_case_status(
+    case_id: UUID,
+    db: AsyncSession = Depends(db)
+):
+    case = await db.get(Case, case_id)
+
+    if not case:
+        raise HTTPException(
+            status_code=404,
+            detail="Case not found"
+        )
+    return {
+        "case_id": str(case_id),
+        "status": case.status
+    }

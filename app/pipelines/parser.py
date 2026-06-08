@@ -156,32 +156,40 @@ def extractData(raw_blocks: List[Dict[str, Any]]) -> Dict[str, Optional[str]]:
 
     return {**required, "decision_date": None, "citation": None}
 
-
-def extractParagraphs(pdf_bytes: bytes) -> List[str]:
-    paragraphs: List[str] = []
+def extractPages(pdf_bytes: bytes, pages_per_chunk: int = 2) -> list[str]:
+    page_texts: list[str] = []
 
     with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
         for page_index in range(len(doc)):
             page = doc[page_index]
-            page_dict: Dict[str, Any] = page.get_text("dict")  # type: ignore[assignment]
+            page_dict = cast(Dict[str, Any], page.get_text("dict"))
             raw_blocks = cast(List[Dict[str, Any]], page_dict["blocks"])
 
+            page_text_parts: list[str] = []
             for block in raw_blocks:
                 if block.get("type") != 0:
                     continue
-                parts: List[str] = [
+                parts: list[str] = [
                     span.get("text", "")
                     for line in block.get("lines", [])
                     for span in line.get("spans", [])
                 ]
                 cleaned = " ".join(" ".join(parts).split()).strip()
-                if not cleaned:
+                if not cleaned or len(cleaned) < 30:
                     continue
-                if len(cleaned) < 30:
-                    continue
-                paragraphs.append(cleaned)
+                page_text_parts.append(cleaned)
 
-    return paragraphs
+            if page_text_parts:
+                page_texts.append(" ".join(page_text_parts))
+
+    # combine every N pages into one chunk
+    chunks: list[str] = []
+    for i in range(0, len(page_texts), pages_per_chunk):
+        combined = " ".join(page_texts[i:i + pages_per_chunk])
+        if combined.strip():
+            chunks.append(combined)
+
+    return chunks
 
 
 def extractMetaData(pdf_bytes: bytes) -> Dict[str, Any]:

@@ -42,6 +42,12 @@ async def safe_stream(generator):
     except Exception as e:
         yield "An unexpected error occurred. Please try again later."
 
+async def llmsummarize(existing_summary: str, new_chunk: str) -> str:
+    prompt = f"Existing summary:\n{existing_summary}\n\nNew text to incorporate:\n{new_chunk}\n\nPlease provide an updated summary that incorporates the new text. If the new text does not add any new information, you can return the existing summary."
+    async for chunk in safe_stream(llmsearch(prompt, stream=False)):
+        existing_summary = chunk
+    return existing_summary
+
 async def llmsearch(query: str, stream: bool = False):
     async with httpx.AsyncClient(timeout=None) as client:
         async with client.stream(

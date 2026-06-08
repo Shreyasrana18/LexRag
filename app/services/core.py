@@ -9,59 +9,36 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Case, CaseChunk, ChatSession, ChatMessage
 from datetime import datetime
 from fastapi.responses import StreamingResponse
+from app.worker.pool import get_arq_pool 
 
 
 async def processUpload(validated_bytes: bytes, db: AsyncSession):
     extracted_metadata = parser.extractMetaData(validated_bytes)
-    extracted_paragraphs = parser.extractParagraphs(validated_bytes)
     metadata = extracted_metadata["metadata"]
 
     try:
-        # 1. Save Case to Postgres
         new_case = Case(
             **metadata,
+            status="pending",
             created_at=datetime.utcnow(),
         )
         db.add(new_case)
         await db.flush()
-
-        # 2. Save CaseChunks to Postgres
-        chunks = [
-            CaseChunk(
-                case_id=new_case.id,
-                chunk_index=i,
-                text=paragraph,
-                created_at=datetime.utcnow(),
-            )
-            for i, paragraph in enumerate(extracted_paragraphs)
-        ]
-        db.add_all(chunks)
-        await db.flush()
-
-        # 3. Generate embeddings and upsert to Qdrant
-        for chunk in chunks:
-            vector = await embedder.generateEmbeddingsAsync(chunk.text)
-            await qdrant.upsert_chunk_vector(
-                chunk_id=str(chunk.id),
-                vector=vector,
-                payload={
-                    "case_id": str(new_case.id),
-                    "chunk_index": chunk.chunk_index
-                }
-            )
-
         await db.commit()
         await db.refresh(new_case)
 
+        # enqueue processing job
+        pool = get_arq_pool()
+        await pool.enqueue_job("process_upload", str(new_case.id), validated_bytes)
+
         return {
-            "metadata": extracted_metadata,
             "case_id": new_case.id,
+            "status": "pending",
         }
 
     except Exception as e:
         await db.rollback()
-        raise RuntimeError(f"Upload failed, transaction rolled back: {e}") from e
-    
+        raise RuntimeError(f"Upload failed: {e}") from e
 
 async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | None = None, session_id: str | None = None):
     queryEmbeddings = await embedder.generateEmbeddingsAsync(q)

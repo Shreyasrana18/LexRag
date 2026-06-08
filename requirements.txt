@@ -13,3 +13,5 @@ greenlet
 python-magic
 python-multipart
 sentence-transformers
+arq
+redis
