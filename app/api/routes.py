@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 import app.pipelines.utils as utils
 import app.services.core as core
@@ -23,7 +23,7 @@ async def search(
     q: str = Query(min_length=2),
     case_id: str | None = Query(None),
     stream: bool = False,
-    session_id: str | None = Query(None)
+    session_id: str | None = Header(None, alias="x-session-id")
 ):
     if session_id:
         isValidSession = await utils.validateSession(db, session_id)

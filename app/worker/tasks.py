@@ -31,10 +31,12 @@ async def process_upload(ctx: dict, case_id: str, pdf_bytes: bytes):
                         "text": chunk_text,
                     }
                 )
-
                 # 3. update rolling summary via LLM
                 rolling_summary = await llm.llmsummarize(rolling_summary, chunk_text)
+                print(f"Processed summary {i+1}/{len(chunks)} for case {case_id}")
 
+            # 4. generate short summary
+            short_summary = await llm.generateShortSummary(rolling_summary)
             # 4. embed and upsert final summary
             summary_vector = await embedding.generateEmbeddingsAsync(rolling_summary)
             await qdrant.upsert_summary_vector(
@@ -43,13 +45,16 @@ async def process_upload(ctx: dict, case_id: str, pdf_bytes: bytes):
                 payload={
                     "case_id": case_id,
                     "summary": rolling_summary,
+                    "short_summary": short_summary,
                 }
             )
 
             # 5. mark done
+            await db.refresh(case)
             case.status = "done"
             await db.commit()
         except Exception as e:
+            await db.refresh(case)
             case.status = "failed"
             await db.commit()
             raise RuntimeError(f"Processing failed for case {case_id}: {e}") from e

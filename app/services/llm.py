@@ -1,7 +1,7 @@
 import httpx
 import json
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from app.constants import LLM_SYSTEM_PROMPT, NO_EXCERPTS_INSTRUCTION, ANSWER_INSTRUCTIONS
+from app.constants import LLM_SYSTEM_PROMPT, NO_EXCERPTS_INSTRUCTION, ANSWER_INSTRUCTIONS, SHORT_SUMMARY_INSTRUCTIONS
 
 class Settings(BaseSettings):
     LLM_URL: str
@@ -47,6 +47,30 @@ async def llmsummarize(existing_summary: str, new_chunk: str) -> str:
     async for chunk in safe_stream(llmsearch(prompt, stream=False)):
         existing_summary = chunk
     return existing_summary
+
+async def generateShortSummary(summary: str) -> str:
+    prompt = SHORT_SUMMARY_INSTRUCTIONS.format(summary=summary)
+
+    response = ""
+    async for chunk in llmsearch(prompt, stream=False):
+        response += chunk
+    return response.strip()
+
+
+async def generateCaseSelectionMessage(query: str, cases: list[dict]) -> str:
+    prompt = f"""User searched for: "{query}"
+
+These cases were found as relevant. Write a single short paragraph (2-3 sentences max) explaining what these cases have in common and why they match the query. Be direct, no fluff.
+
+Cases:
+{chr(10).join([f"- {c['title']}: {c['short_summary']}" for c in cases])}
+
+Response:"""
+
+    response = ""
+    async for chunk in llmsearch(prompt, stream=False):
+        response += chunk
+    return response.strip()
 
 async def llmsearch(query: str, stream: bool = False):
     async with httpx.AsyncClient(timeout=None) as client:

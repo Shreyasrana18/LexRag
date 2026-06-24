@@ -97,14 +97,19 @@ async def upsert_summary_vector(case_id: str, vector: list, payload: dict):
         ],
     )
 
-async def search_summaries(query_vector: list, limit: int = 5) -> list[str]:
+async def search_summaries(query_vector: list, limit: int = 5) -> list[dict]:
     results = await qdrant_client.query_points(
         collection_name=DbConfig.SUMMARY_COLLECTION_NAME,
         query=query_vector,
         limit=limit,
     )
-    return [point.payload["case_id"] for point in results.points if point.payload]
-
+    return [
+        {
+            "case_id": point.payload["case_id"],
+            "short_summary": point.payload.get("short_summary", "")
+        }
+        for point in results.points if point.payload
+    ]
 async def search_chunks(query_vector: list, case_ids: list[str], limit: int = 5):
     query_filter = Filter(
         must=[

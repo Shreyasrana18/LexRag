@@ -10,6 +10,8 @@ from app.db.models import Case, CaseChunk, ChatSession, ChatMessage
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 from app.worker.pool import get_arq_pool 
+from app.constants import CHAT_HISTORY_LIMIT, ERROR_RESPONSES
+import uuid
 
 
 async def processUpload(validated_bytes: bytes, db: AsyncSession):
@@ -42,10 +44,43 @@ async def processUpload(validated_bytes: bytes, db: AsyncSession):
 
 async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | None = None, session_id: str | None = None):
     queryEmbeddings = await embedder.generateEmbeddingsAsync(q)
+    # no case_id — search summaries and return matching cases
+    if not case_id:
+        summary_results = await qdrant.search_summaries(query_vector=queryEmbeddings)
+        if not summary_results:
+            return {"message": "No relevant cases found for your query."}
 
+        case_ids = [r["case_id"] for r in summary_results]
+        summaries_map = {r["case_id"]: r["short_summary"] for r in summary_results}
+
+        cases_result = await db.execute(
+            select(Case).where(Case.id.in_([uuid.UUID(cid) for cid in case_ids]))
+        )
+        cases_list = cases_result.scalars().all()
+
+        message = await llm.generateCaseSelectionMessage(q, [
+            {"title": case.title, "short_summary": summaries_map.get(str(case.id), "")}
+            for case in cases_list
+        ])
+
+        return {
+            "message": message,
+            "cases": [
+                {
+                    "case_id": str(case.id),
+                    "title": case.title,
+                    "court": case.court,
+                    "case_number": case.case_number,
+                    "decision_date": str(case.decision_date),
+                    "summary": summaries_map.get(str(case.id), "")
+                }
+                for case in cases_list
+            ]
+        }
+    # case_id provided — create session if needed
     if not session_id:
         new_session = ChatSession(
-            case_id=case_id if case_id else None,
+            case_id=case_id,
             created_at=datetime.utcnow()
         )
         db.add(new_session)
@@ -54,20 +89,17 @@ async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | 
         session_id = str(new_session.id)
 
     chat_messages = await db.execute(
-        select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at.asc())
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(CHAT_HISTORY_LIMIT)
     )
-    chat_history = utils.formatChatHistory(chat_messages.scalars().all())
+    chat_history = utils.formatChatHistory(reversed(chat_messages.scalars().all()))
 
-    results = await qdrant.search(query_vector=queryEmbeddings, case_id=case_id)
-    case_ids = [
-        result.payload['case_id']
-        for result in results
-        if result.payload is not None
-    ]
-    case_chunks = await db.execute(
-        select(CaseChunk.text).where(CaseChunk.case_id.in_(case_ids))
-    )
-    texts: list[str] = list(case_chunks.scalars().all())
+    # pull text directly from qdrant payload
+    chunks = await qdrant.search_chunks(query_vector=queryEmbeddings, case_ids=[case_id])
+    texts = [chunk.payload["text"] for chunk in chunks if chunk.payload]
+
     prompt = llm.buildPrompt(texts, q, chat_history)
 
     db.add(ChatMessage(
@@ -85,7 +117,9 @@ async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | 
             yield chunk
 
         full_text = "".join(full_response)
-        if not WEAK_RESPONSE_PHRASES:
+        is_error = any(phrase in full_text.lower() for phrase in WEAK_RESPONSE_PHRASES) or full_text.strip() in ERROR_RESPONSES
+
+        if not is_error:
             db.add(ChatMessage(
                 session_id=session_id,
                 role="assistant",
