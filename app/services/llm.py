@@ -13,13 +13,14 @@ class Settings(BaseSettings):
 
 settings = Settings() # type: ignore
 
-def buildPrompt(records: list[str], query: str, chat_history: list[dict] | None = None) -> str:
+def buildPrompt(chunks: list[dict], query: str, chat_history: list[dict] | None = None) -> str:
     prompt = LLM_SYSTEM_PROMPT + "\n\n"
 
-    if records:
+    if chunks:
         prompt += "RELEVANT CASE EXCERPTS:\n"
-        for i, record in enumerate(records, 1):
-            prompt += f"[Excerpt {i}]\n{record}\n\n"
+        for i, chunk in enumerate(chunks, 1):
+            page_label = chunk.get("page_range") or f"Chunk {chunk.get('chunk_index', i)}"
+            prompt += f"[Excerpt {i} | {page_label}]\n{chunk['text']}\n\n"
     else:
         prompt += f"NOTE: {NO_EXCERPTS_INSTRUCTION}\n\n"
 
@@ -32,7 +33,6 @@ def buildPrompt(records: list[str], query: str, chat_history: list[dict] | None 
 
     prompt += f"CURRENT QUESTION: {query}\n\nINSTRUCTIONS:\n{ANSWER_INSTRUCTIONS}\n\nANSWER:"
     return prompt
-
 async def safe_stream(generator):
     try:
         async for chunk in generator:

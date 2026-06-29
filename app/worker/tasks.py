@@ -20,14 +20,16 @@ async def process_upload(ctx: dict, case_id: str, pdf_bytes: bytes):
 
             rolling_summary = ""
             for i, chunk_text in enumerate(chunks):
-                # 2. embed and upsert chunk to qdrant
                 vector = await embedding.generateEmbeddingsAsync(chunk_text)
+                page_start = (i * 2) + 1
+                page_end = page_start + 1
                 await qdrant.upsert_chunk_vector(
                     chunk_id=str(uuid.uuid4()),
                     vector=vector,
                     payload={
                         "case_id": case_id,
                         "chunk_index": i,
+                        "page_range": f"Page {page_start}-{page_end}",
                         "text": chunk_text,
                     }
                 )

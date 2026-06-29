@@ -7,11 +7,13 @@ import app.pipelines.utils as utils
 from app.constants import WEAK_RESPONSE_PHRASES
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Case, CaseChunk, ChatSession, ChatMessage
+from app.services import reranker
 from datetime import datetime
 from fastapi.responses import StreamingResponse
 from app.worker.pool import get_arq_pool 
 from app.constants import CHAT_HISTORY_LIMIT, ERROR_RESPONSES
 import uuid
+import json
 
 
 async def processUpload(validated_bytes: bytes, db: AsyncSession):
@@ -41,10 +43,9 @@ async def processUpload(validated_bytes: bytes, db: AsyncSession):
     except Exception as e:
         await db.rollback()
         raise RuntimeError(f"Upload failed: {e}") from e
-
 async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | None = None, session_id: str | None = None):
     queryEmbeddings = await embedder.generateEmbeddingsAsync(q)
-    # no case_id — search summaries and return matching cases
+
     if not case_id:
         summary_results = await qdrant.search_summaries(query_vector=queryEmbeddings)
         if not summary_results:
@@ -77,7 +78,7 @@ async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | 
                 for case in cases_list
             ]
         }
-    # case_id provided — create session if needed
+
     if not session_id:
         new_session = ChatSession(
             case_id=case_id,
@@ -96,11 +97,20 @@ async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | 
     )
     chat_history = utils.formatChatHistory(reversed(chat_messages.scalars().all()))
 
-    # pull text directly from qdrant payload
-    chunks = await qdrant.search_chunks(query_vector=queryEmbeddings, case_ids=[case_id])
-    texts = [chunk.payload["text"] for chunk in chunks if chunk.payload]
+    # fetch more chunks than needed, rerank down to top 5
+    chunks = await qdrant.search_chunks(query_vector=queryEmbeddings, case_ids=[case_id], limit=15)
+    chunks_for_reranking = [
+        {
+            "text": chunk.payload["text"],
+            "chunk_index": chunk.payload.get("chunk_index"),
+            "page_range": chunk.payload.get("page_range", ""),
+            "case_id": chunk.payload.get("case_id"),
+        }
+        for chunk in chunks if chunk.payload
+    ]
+    reranked_chunks = await reranker.rerank(query=q, chunks=chunks_for_reranking, top_k=5)
 
-    prompt = llm.buildPrompt(texts, q, chat_history)
+    prompt = llm.buildPrompt(reranked_chunks, q, chat_history)
 
     db.add(ChatMessage(
         session_id=session_id,
@@ -127,6 +137,9 @@ async def search(db: AsyncSession, q: str, stream: bool = False, case_id: str | 
                 created_at=datetime.utcnow()
             ))
             await db.commit()
+            citations = utils.extract_citations(full_text, reranked_chunks)
+            if citations:
+                yield f"\n\n###CITATIONS###{json.dumps({'citations': citations})}"    
 
     return StreamingResponse(
         stream_and_save(),

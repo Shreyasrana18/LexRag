@@ -1,9 +1,9 @@
 from sqlalchemy import select
 from fastapi import UploadFile
-from fastapi import APIRouter, File, UploadFile, HTTPException, Header, status
+from fastapi import File, UploadFile, HTTPException, Header, status
 from typing import Annotated
 import magic
-import app.pipelines.parser as parser
+import re
 
 MAX_SIZE = 1024 * 1024  # 1 MB
 ALLOWED_MIME_TYPES = {"image/jpeg", "image/png", "application/pdf"}
@@ -39,3 +39,17 @@ def formatChatHistory(messages):
             "content": msg.content
         })
     return formatted_history
+
+
+def extract_citations(text: str, chunks: list[dict]) -> list[dict]:
+    cited = []
+    excerpt_numbers = set(re.findall(r'Excerpt\s+(\d+)', text, re.IGNORECASE))
+    for num in excerpt_numbers:
+        index = int(num) - 1
+        if 0 <= index < len(chunks):
+            cited.append({
+                "excerpt": int(num),
+                "page_range": chunks[index].get("page_range", ""),
+                "chunk_index": chunks[index].get("chunk_index")
+            })
+    return sorted(cited, key=lambda x: x["excerpt"])
